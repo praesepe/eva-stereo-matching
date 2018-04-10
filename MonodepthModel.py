@@ -1,9 +1,3 @@
-
-# coding: utf-8
-
-# In[1]:
-
-
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -23,9 +17,6 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from PIL import Image
 os.environ['TF_CPP_MIN_LOG_LEVEL']='1'
-
-
-# In[2]:
 
 
 class Bottleneck(nn.Module):
@@ -49,11 +40,9 @@ class Bottleneck(nn.Module):
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.elu(out)
-
         out = self.conv2(out)
         out = self.bn2(out)
         out = self.elu(out)
-
         out = self.conv3(out)
         out = self.bn3(out)
 
@@ -64,9 +53,6 @@ class Bottleneck(nn.Module):
         out = self.elu(out)
 
         return out
-
-
-# In[3]:
 
 
 class DecoderBlock(nn.Module):
@@ -92,11 +78,8 @@ class DecoderBlock(nn.Module):
         return x
 
 
-# In[4]:
-
-
 class DispBlock(nn.Module):
-    
+
     def __init__(self, inplanes, planes=2, kernel=3, stride=1):
         super(DispBlock, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, 2, kernel_size=kernel, stride=stride, padding=1)
@@ -110,16 +93,12 @@ class DispBlock(nn.Module):
         return disp, udisp
 
 
-# In[5]:
-
-
 class MonodepthNet(nn.Module):
 
     def __init__(self, block=Bottleneck, layers=[3, 4, 6, 3], num_classes=1000):
         self.inplanes = 64
         super(MonodepthNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.elu = nn.ELU()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -150,8 +129,7 @@ class MonodepthNet(nn.Module):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
+                nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm2d(planes * block.expansion),
             )
 
@@ -162,7 +140,7 @@ class MonodepthNet(nn.Module):
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
-    
+
     def forward(self, x):
         #encoder
         x = self.conv1(x)
@@ -173,14 +151,14 @@ class MonodepthNet(nn.Module):
         conv3 = self.layer2(conv2)
         conv4 = self.layer3(conv3)
         conv5 = self.layer4(conv4)
-        
+
         #skip
         skip1 = conv1
         skip2 = pool1
         skip3 = conv2
         skip4 = conv3
         skip5 = conv4
-        
+
         #decoder
         upconv6 = self.up6(conv5, skip5)
         upconv5 = self.up5(upconv6, skip4)
@@ -193,5 +171,3 @@ class MonodepthNet(nn.Module):
         upconv1 = self.up1(upconv2, udisp2)
         self.disp1, udisp1 = self.get_disp1(upconv1)
         return [disp4, disp3, disp2, disp1]
-        
-
