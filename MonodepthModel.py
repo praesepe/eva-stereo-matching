@@ -1,3 +1,9 @@
+
+# coding: utf-8
+
+# In[1]:
+
+
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -17,6 +23,9 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from PIL import Image
 os.environ['TF_CPP_MIN_LOG_LEVEL']='1'
+
+
+# In[2]:
 
 
 class Bottleneck(nn.Module):
@@ -40,9 +49,11 @@ class Bottleneck(nn.Module):
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.elu(out)
+
         out = self.conv2(out)
         out = self.bn2(out)
         out = self.elu(out)
+
         out = self.conv3(out)
         out = self.bn3(out)
 
@@ -55,11 +66,14 @@ class Bottleneck(nn.Module):
         return out
 
 
+# In[3]:
+
+
 class DecoderBlock(nn.Module):
 
     def __init__(self, inplanes, planes, mid, stride=1):
         super(DecoderBlock, self).__init__()
-        self.upsample = nn.UpsamplingNearest2d(scale_factor=2)
+        self.upsample = nn.Upsample(scale_factor=2)
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = nn.Conv2d(mid, planes, kernel_size=3, stride=1, padding=1)
@@ -70,7 +84,7 @@ class DecoderBlock(nn.Module):
         x = self.upsample(x)
         x = self.elu(self.bn1(self.conv1(x)))
         #concat
-        if udisp:
+        if udisp is not None:
             x = torch.cat((x, skip, udisp), 1)
         else:
             x = torch.cat((x, skip), 1)
@@ -78,19 +92,25 @@ class DecoderBlock(nn.Module):
         return x
 
 
-class DispBlock(nn.Module):
+# In[4]:
 
+
+class DispBlock(nn.Module):
+    
     def __init__(self, inplanes, planes=2, kernel=3, stride=1):
         super(DispBlock, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, 2, kernel_size=kernel, stride=stride, padding=1)
         self.bn1 = nn.BatchNorm2d(2)
         self.sigmoid = nn.Sigmoid()
-        self.upsample = nn.UpsamplingNearest2d(scale_factor=2)
+        self.upsample = nn.Upsample(scale_factor=2)
 
     def forward(self, x):
         disp = self.sigmoid(self.bn1(self.conv1(x)))
         udisp = self.upsample(disp)
         return disp, udisp
+
+
+# In[5]:
 
 
 class MonodepthNet(nn.Module):
@@ -102,13 +122,13 @@ class MonodepthNet(nn.Module):
         self.bn1 = nn.BatchNorm2d(64)
         self.elu = nn.ELU()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer1 = self._make_layer(block, 64, layers[0], stride=2)
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-        self.up6 = DecoderBlock(512, 512, 768)
-        self.up5 = DecoderBlock(512, 256, 384)
-        self.up4 = DecoderBlock(256, 128, 192)
+        self.up6 = DecoderBlock(2048, 512, 1536)
+        self.up5 = DecoderBlock(512, 256, 768)
+        self.up4 = DecoderBlock(256, 128, 384)
         self.up3 = DecoderBlock(128, 64, 130)
         self.up2 = DecoderBlock(64, 32, 98)
         self.up1 = DecoderBlock(32, 16, 18)
@@ -140,25 +160,25 @@ class MonodepthNet(nn.Module):
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
-
+    
     def forward(self, x):
         #encoder
-        x = self.conv1(x)
+        x = self.conv1(x) #2
         x = self.bn1(x)
         conv1 = self.elu(x)
-        pool1 = self.maxpool(conv1)
-        conv2 = self.layer1(pool1)
-        conv3 = self.layer2(conv2)
-        conv4 = self.layer3(conv3)
-        conv5 = self.layer4(conv4)
-
+        pool1 = self.maxpool(conv1) #4
+        conv2 = self.layer1(pool1) #8
+        conv3 = self.layer2(conv2) #16
+        conv4 = self.layer3(conv3) #32
+        conv5 = self.layer4(conv4) #64
+        
         #skip
         skip1 = conv1
         skip2 = pool1
         skip3 = conv2
         skip4 = conv3
         skip5 = conv4
-
+        
         #decoder
         upconv6 = self.up6(conv5, skip5)
         upconv5 = self.up5(upconv6, skip4)
@@ -170,4 +190,7 @@ class MonodepthNet(nn.Module):
         self.disp2, udisp2 = self.get_disp2(upconv2)
         upconv1 = self.up1(upconv2, udisp2)
         self.disp1, udisp1 = self.get_disp1(upconv1)
-        return [disp4, disp3, disp2, disp1]
+        
+        return [self.disp1, self.disp2, self.disp3, self.disp4]
+        
+
