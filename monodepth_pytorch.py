@@ -1,12 +1,13 @@
 
 # coding: utf-8
 
-# In[130]:
+# In[1]:
 
 
 import torch
 import torchvision
 import torchvision.transforms as transforms
+import torch.utils.data as data
 import matplotlib.pyplot as plt
 import numpy as np
 from torch.autograd import Variable
@@ -16,10 +17,9 @@ import torch.optim as optim
 import math
 import argparse
 from tensorboardX import SummaryWriter
-import argparse
+import random
 import os
 import os.path
-import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from PIL import Image
 import import_ipynb
@@ -29,7 +29,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='1'
 torch.cuda.set_device(1)
 
 
-# In[131]:
+# In[2]:
 
 
 def get_args():
@@ -64,15 +64,15 @@ def get_args():
     return args
 
 
-# In[132]:
+# In[3]:
 
 
 #args = get_args()
-net = MonodepthNet()
+net = MonodepthNet().cuda()
 optimizer = optim.Adam(net.parameters(), lr=1e-4)
 
 
-# In[151]:
+# In[4]:
 
 
 def get_data(path = '/home/hylai/my/output/folder/'):
@@ -94,18 +94,17 @@ def get_data(path = '/home/hylai/my/output/folder/'):
     return left_image_train, right_image_train, left_image_test, right_image_test
 
 
-# In[152]:
+# In[5]:
 
 
 def get_transform():
     return transforms.Compose([
-        transforms.Scale((256,512)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.35675976, 0.37380189, 0.3764753), (0.32064945, 0.32098866, 0.32325324))
+        transforms.Scale([512, 256]),
+        transforms.ToTensor()
     ])
 
 
-# In[153]:
+# In[6]:
 
 
 class myImageFolder(data.Dataset):
@@ -121,6 +120,34 @@ class myImageFolder(data.Dataset):
         right_image = Image.open(right).convert('RGB')
         
         #augmentation
+        if not self.training:
+            
+            #randomly flip
+            if random.uniform(0, 1) > 0.5:
+                left_image = left_image.transpose(Image.FLIP_LEFT_RIGHT)
+                right_image = right_image.transpose(Image.FLIP_LEFT_RIGHT)
+                
+            #randomly shift gamma
+            if random.uniform(0, 1) > 0.5:
+                gamma = random.uniform(0.8, 1.2)
+                left_image = Image.fromarray(np.clip((np.array(left_image) ** gamma), 0, 255).astype('uint8'), 'RGB')
+                right_image = Image.fromarray(np.clip((np.array(right_image) ** gamma), 0, 255).astype('uint8'), 'RGB')
+            
+            #randomly shift brightness
+            if random.uniform(0, 1) > 0.5:
+                brightness = random.uniform(0.5, 2.0)
+                left_image = Image.fromarray(np.clip((np.array(left_image) * brightness), 0, 255).astype('uint8'), 'RGB')
+                right_image = Image.fromarray(np.clip((np.array(right_image) * brightness), 0, 255).astype('uint8'), 'RGB')
+            
+            #randomly shift color
+            if random.uniform(0, 1) > 0.5:
+                colors = [random.uniform(0.8, 1.2) for i in range(3)]
+                shape = np.array(left_image).shape
+                white = np.ones((shape[0], shape[1]))
+                color_image = np.stack([white * colors[i] for i in range(3)], axis=2)
+                left_image = Image.fromarray(np.clip((np.array(left_image) * color_image), 0, 255).astype('uint8'), 'RGB')
+                right_image = Image.fromarray(np.clip((np.array(right_image) * color_image), 0, 255).astype('uint8'), 'RGB')
+                
         
         #transforms
         process = get_transform()
@@ -132,25 +159,91 @@ class myImageFolder(data.Dataset):
         return len(self.left)
 
 
-# In[155]:
+# In[7]:
 
 
-#dataloader
-left_path = '/home/hylai/my/output/folder/2011_09_26/2011_09_26_drive_0001_sync/image_02/data/'
-right_path = '/home/hylai/my/output/folder/2011_09_26/2011_09_26_drive_0001_sync/image_03/data/'
-left_image = [img for img in os.listdir(left_path)]
-right_image = [img for img in os.listdir(right_path)]
-img = Image.open(left_path+left_image[30]).convert('RGB')
-print(np.array(img).shape)
-plt.imshow(img)
+def make_pyramid(image, num_scales):
+    scale_image = [image]
+    height, width = image.shape[2:]
+
+    for i in range(num_scales - 1):
+        new = []
+        for j in range(image.shape[0]):
+            ratio = 2 ** (i+1)
+            nh = height // ratio
+            nw = width // ratio
+            tmp = transforms.ToPILImage()(image[j]).convert('RGB')
+            tmp = transforms.Scale([nw, nh])(tmp)
+            new.append(np.array(tmp))
+        scale_image.append(new)
+        
+    return scale_image
+
+
+# In[8]:
+
+
+def gradient_x(img):
+    print(img[:,:,:-1,:].shape, img[:,:,1:,:].shape)
+    gx = torch.add(img[:,:,:-1,:], -1, img[:,:,1:,:])
+    return gx
+
+def gradient_y(img):
+    gy = torch.add(img[:,:,:,:-1], -1, img[:,:,:,1:])
+    return gy
+
+def get_disparity_smoothness(disp, pyramid):
+    disp_gradients_x = [gradient_x(d) for d in disp]
+    disp_gradients_y = [gradient_y(d) for d in disp]
+
+    #image_gradients_x = [gradient_x(img) for img in pyramid]
+    #image_gradients_y = [gradient_y(img) for img in pyramid]
+    
+    return 1
+
+
+# In[9]:
+
 
 left_image_train, right_image_train, left_image_test, right_image_test = get_data()
 TrainImageLoader = torch.utils.data.DataLoader(
          myImageFolder(left_image_train, right_image_train, True), 
-         batch_size= 1, shuffle= True, num_workers= 1, drop_last=False)
-#TestImageLoader
+         batch_size = 8, shuffle = True, num_workers = 8, drop_last =False)
+TestImageLoader = torch.utils.data.DataLoader(
+         myImageFolder(left_image_test, right_image_test, False),
+         batch_size = 8, shuffle = False, num_workers = 8, drop_last =False)
 
-#Test
-for batch_idx, (i, j) in enumerate(TrainImageLoader, 0):
-    break
+#Train
+do_stereo = 0
+for epoch in range(1):
+    for batch_idx, (left, right) in enumerate(TestImageLoader, 0):
+
+        #generate image pyramid[scale][batch]
+        left_pyramid = make_pyramid(left, 4)
+        right_pyramid = make_pyramid(right, 4)
+        
+        if do_stereo:
+            model_input = Variable(torch.cat((left, right), 0).cuda())
+        else:
+            model_input = Variable(left.cuda())
+            
+        disp_est = net(model_input)
+        disp_left_est = [d[:, 0, :, :].unsqueeze(1) for d in disp_est]
+        disp_right_est = [d[:, 1, :, :].unsqueeze(1) for d in disp_est]
+        #x = disp_left_est[0][0,0,:,:].data.cpu().numpy()
+        #plt.imshow(x)
+        
+        #generate image
+        #left_est = [warp(right_pyramid[i], disp_left_est[i]) for i in range(4)]
+        #right_est = [warp(left_pyramid[i], disp_right_est[i]) for i in range(4)]
+        
+        #LR consistency
+        #right_to_left_disp = [warp(disp_right_est[i], disp_left_est[i]) for i in range(4)]
+        #left_to_right_disp = [warp(disp_left_est[i], disp_right_est[i]) for i in range(4)]
+        
+        #disparity smoothness
+        #disp_left_smoothness = get_disparity_smoothness(disp_left_est, left_pyramid)
+        #disp_right_smoothness = get_disparity_smoothness(disp_right_est, right_pyramid)
+    
+        break
 
