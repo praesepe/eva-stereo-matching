@@ -31,36 +31,29 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='1'
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride, downsample=None):
         super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes * 4)
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1)
         self.elu = nn.ELU()
         self.downsample = downsample
         self.stride = stride
+        
+        self.shortcut = nn.Sequential(nn.Conv2d(inplanes, self.expansion*planes, kernel_size=1, stride=stride))
 
     def forward(self, x):
         residual = x
 
         out = self.conv1(x)
-        out = self.bn1(out)
         out = self.elu(out)
 
         out = self.conv2(out)
-        out = self.bn2(out)
         out = self.elu(out)
 
         out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-
-        out += residual
+        
+        out += self.shortcut(x)
         out = self.elu(out)
 
         return out
@@ -75,20 +68,18 @@ class DecoderBlock(nn.Module):
         super(DecoderBlock, self).__init__()
         self.upsample = nn.Upsample(scale_factor=2)
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=1, padding=1)
-        self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = nn.Conv2d(mid, planes, kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(planes)
         self.elu = nn.ELU()
 
     def forward(self, x, skip, udisp=None):
         x = self.upsample(x)
-        x = self.elu(self.bn1(self.conv1(x)))
+        x = self.elu(self.conv1(x))
         #concat
         if udisp is not None:
             x = torch.cat((x, skip, udisp), 1)
         else:
             x = torch.cat((x, skip), 1)
-        x = self.elu(self.bn2(self.conv2(x)))
+        x = self.elu(self.conv2(x))
         return x
 
 
@@ -100,12 +91,11 @@ class DispBlock(nn.Module):
     def __init__(self, inplanes, planes=2, kernel=3, stride=1):
         super(DispBlock, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, 2, kernel_size=kernel, stride=stride, padding=1)
-        self.bn1 = nn.BatchNorm2d(2)
         self.sigmoid = nn.Sigmoid()
         self.upsample = nn.Upsample(scale_factor=2)
 
     def forward(self, x):
-        disp = self.sigmoid(self.bn1(self.conv1(x)))
+        disp = 0.3 * self.sigmoid(self.conv1(x))
         udisp = self.upsample(disp)
         return disp, udisp
 
@@ -115,11 +105,13 @@ class DispBlock(nn.Module):
 
 class MonodepthNet(nn.Module):
 
-    def __init__(self, block=Bottleneck, layers=[3, 4, 6, 3], num_classes=1000):
+    def __init__(self, block=Bottleneck, layers=[3, 4, 6, 3], num_classes=1000, do_stereo = 0):
         self.inplanes = 64
         super(MonodepthNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        if do_stereo:
+            self.conv1 = nn.Conv2d(6, 64, kernel_size=7, stride=2, padding=3)
+        else:
+            self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
         self.elu = nn.ELU()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0], stride=2)
@@ -129,42 +121,28 @@ class MonodepthNet(nn.Module):
         self.up6 = DecoderBlock(2048, 512, 1536)
         self.up5 = DecoderBlock(512, 256, 768)
         self.up4 = DecoderBlock(256, 128, 384)
-        self.up3 = DecoderBlock(128, 64, 130)
-        self.up2 = DecoderBlock(64, 32, 98)
-        self.up1 = DecoderBlock(32, 16, 18)
         self.get_disp4 = DispBlock(128)
+        self.up3 = DecoderBlock(128, 64, 130)
         self.get_disp3 = DispBlock(64)
+        self.up2 = DecoderBlock(64, 32, 98)
         self.get_disp2 = DispBlock(32)
+        self.up1 = DecoderBlock(32, 16, 18)
         self.get_disp1 = DispBlock(16)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
+                
 
     def _make_layer(self, block, planes, blocks, stride=1):
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
-            )
-
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
+        layers.append(block(self.inplanes, planes, 1))
         self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+        for i in range(1, blocks - 1):
+            layers.append(block(self.inplanes, planes, 1))
+        layers.append(block(self.inplanes, planes, 2))
 
         return nn.Sequential(*layers)
     
     def forward(self, x):
         #encoder
         x = self.conv1(x) #2
-        x = self.bn1(x)
         conv1 = self.elu(x)
         pool1 = self.maxpool(conv1) #4
         conv2 = self.layer1(pool1) #8
